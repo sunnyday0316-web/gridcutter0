@@ -1,0 +1,648 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Grid Image Cutter</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+    <style>
+        .grid-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+        }
+        
+        /* 드래그 가능한 선 스타일 */
+        .draggable-line {
+            position: absolute;
+            background-color: rgba(59, 130, 246, 0.8);
+            pointer-events: auto;
+            z-index: 10;
+            transition: background-color 0.2s;
+        }
+        .draggable-line:hover {
+            background-color: rgba(59, 130, 246, 1);
+        }
+        .draggable-line::after {
+            content: '';
+            position: absolute;
+            background-color: transparent;
+        }
+
+        /* 세로선 (열 구분) */
+        .line-v {
+            width: 2px;
+            top: 0;
+            bottom: 0;
+            cursor: ew-resize;
+            box-shadow: 0 0 2px white;
+        }
+        .line-v::after {
+            left: -5px;
+            right: -5px;
+            top: 0;
+            bottom: 0;
+        }
+
+        /* 가로선 (행 구분) */
+        .line-h {
+            height: 2px;
+            left: 0;
+            right: 0;
+            cursor: ns-resize;
+            box-shadow: 0 0 2px white;
+        }
+        .line-h::after {
+            top: -5px;
+            bottom: -5px;
+            left: 0;
+            right: 0;
+        }
+
+        /* 결과 카드 내부 드래그 영역 */
+        .img-pan-viewport {
+            position: relative;
+            width: 100%;
+            overflow: hidden;
+            background-color: #f1f5f9;
+            cursor: grab;
+            user-select: none;
+            -webkit-user-drag: none;
+        }
+        .img-pan-viewport:active {
+            cursor: grabbing;
+        }
+        .img-pan-viewport img {
+            pointer-events: none;
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+        }
+        
+        /* 카드 위 툴팁 효과 */
+        .drag-tooltip {
+            position: absolute;
+            bottom: 8px;
+            left: 50%;
+            transform: translateX(-50%);
+            background-color: rgba(15, 23, 42, 0.75);
+            color: white;
+            padding: 4px 8px;
+            border-radius: 6px;
+            font-size: 10px;
+            pointer-events: none;
+            opacity: 0;
+            transition: opacity 0.2s;
+        }
+        .img-pan-viewport:hover .drag-tooltip {
+            opacity: 1;
+        }
+    </style>
+</head>
+<body class="bg-slate-50 min-h-screen font-sans text-slate-900">
+
+    <nav class="bg-white border-b border-slate-200 px-6 py-4 sticky top-0 z-30 shadow-sm">
+        <div class="max-w-7xl mx-auto flex justify-between items-center">
+            <h1 class="text-xl font-bold text-blue-600 flex items-center gap-2">
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 10h16M4 14h16M4 18h16" />
+                </svg>
+                Grid Image Cutter <span class="text-[10px] bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full ml-2">v4.0 Position Adjuster</span>
+            </h1>
+        </div>
+    </nav>
+
+    <main class="max-w-7xl mx-auto p-6 grid grid-cols-1 lg:grid-cols-4 gap-8">
+        <!-- Sidebar Controls -->
+        <div class="lg:col-span-1 space-y-4">
+            <div class="bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
+                <h2 class="text-lg font-semibold mb-4 text-slate-700">설정</h2>
+                
+                <div class="space-y-4">
+                    <div>
+                        <label class="block text-sm font-medium text-slate-600 mb-1">이미지 업로드</label>
+                        <input type="file" id="imageInput" accept="image/*" class="block w-full text-sm text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100 cursor-pointer"/>
+                    </div>
+
+                    <div class="grid grid-cols-2 gap-4">
+                        <div>
+                            <label class="block text-sm font-medium text-slate-600 mb-1">행 (Rows)</label>
+                            <input type="number" id="rowsInput" value="2" min="1" class="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none">
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-slate-600 mb-1">열 (Cols)</label>
+                            <input type="number" id="colsInput" value="2" min="1" class="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none">
+                        </div>
+                    </div>
+
+                    <p class="text-[11px] text-slate-400 italic bg-slate-50 p-2 rounded border border-dashed border-slate-200">
+                        * 이미지 위 파란 선을 드래그하여 기본 분할 위치를 맞춘 뒤 <strong>자르기</strong>를 진행하세요.
+                    </p>
+
+                    <div class="pt-2 space-y-2">
+                        <button id="cutBtn" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-4 rounded-xl transition-all shadow-lg shadow-blue-100 flex items-center justify-center gap-2">
+                            이미지 자르기
+                        </button>
+                        <button id="resetBtn" class="w-full bg-slate-100 hover:bg-red-50 hover:text-red-600 text-slate-600 font-semibold py-3 px-4 rounded-xl transition-colors flex items-center justify-center gap-2">
+                            전체 초기화
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <div id="zipActionContainer" class="hidden">
+                <button id="downloadZipBtn" class="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-3 px-4 rounded-xl transition-all shadow-lg shadow-emerald-100 flex items-center justify-center gap-2">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                    </svg>
+                    전체 ZIP 다운로드
+                </button>
+            </div>
+        </div>
+
+        <!-- Main Workspace -->
+        <div class="lg:col-span-3 space-y-6">
+            <!-- Preview Section -->
+            <div class="bg-white p-2 rounded-2xl shadow-sm border border-slate-200 min-h-[500px] flex flex-col items-center justify-center relative select-none">
+                <div id="emptyState" class="text-center p-12 pointer-events-none">
+                    <div class="text-slate-300 mb-4 flex justify-center">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-16 w-16" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                        </svg>
+                    </div>
+                    <p class="text-slate-500 font-medium">이미지를 업로드하고 선을 움직여 보세요</p>
+                </div>
+
+                <div id="imageContainer" class="relative hidden max-w-full inline-block">
+                    <img id="mainImage" src="#" class="max-w-full h-auto block rounded-sm pointer-events-none">
+                    <div id="gridOverlay" class="grid-overlay pointer-events-auto"></div>
+                </div>
+            </div>
+
+            <!-- Results -->
+            <div id="resultSection" class="hidden space-y-4">
+                <div class="bg-blue-50 border border-blue-200 rounded-xl p-4 flex gap-3 items-center">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 text-blue-600 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                    </svg>
+                    <p class="text-xs text-blue-800 font-medium leading-relaxed">
+                        💡 <strong>팁:</strong> 아래 분할된 개별 사진들을 마우스나 손가락으로 직접 <strong>드래그</strong>해 보세요! 각 칸 안에서 개체(인물, 물체)의 중심과 구도를 완벽하게 미세 조정할 수 있습니다.
+                    </p>
+                </div>
+
+                <div class="flex justify-between items-center px-2">
+                    <h3 class="text-lg font-bold text-slate-800">분할된 조각들</h3>
+                    <span id="sliceCount" class="text-sm font-medium text-slate-500 bg-slate-200 px-2 py-0.5 rounded">0 Slices</span>
+                </div>
+                <div id="resultsGrid" class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4 pb-12">
+                    <!-- Slices -->
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <div id="toast" class="fixed bottom-8 left-1/2 -translate-x-1/2 transform translate-y-24 opacity-0 transition-all duration-300 bg-slate-900 text-white px-8 py-4 rounded-2xl shadow-2xl flex items-center gap-3 z-50 whitespace-nowrap">
+        <span id="toastMsg">메시지</span>
+    </div>
+
+    <script>
+        const imageInput = document.getElementById('imageInput');
+        const rowsInput = document.getElementById('rowsInput');
+        const colsInput = document.getElementById('colsInput');
+        const cutBtn = document.getElementById('cutBtn');
+        const resetBtn = document.getElementById('resetBtn');
+        const downloadZipBtn = document.getElementById('downloadZipBtn');
+        const imageContainer = document.getElementById('imageContainer');
+        const emptyState = document.getElementById('emptyState');
+        const mainImage = document.getElementById('mainImage');
+        const gridOverlay = document.getElementById('gridOverlay');
+        const resultSection = document.getElementById('resultSection');
+        const resultsGrid = document.getElementById('resultsGrid');
+        const zipActionContainer = document.getElementById('zipActionContainer');
+        const sliceCountText = document.getElementById('sliceCount');
+        const toast = document.getElementById('toast');
+        const toastMsg = document.getElementById('toastMsg');
+
+        let originalImage = null;
+        
+        // 각 분할 조각의 메타데이터 및 이미지 정보 상태 배열
+        let slicedFiles = []; 
+        
+        // 선의 상대 위치 저장 (0 ~ 1 사이의 비율)
+        let vLines = []; // 세로선들 (열 구분용)
+        let hLines = []; // 가로선들 (행 구분용)
+        
+        let activeLine = null; // 현재 드래그 중인 메인 절단선 엘리먼트
+        let activeLineType = null; // 'V' or 'H'
+        let activeLineIndex = -1;
+
+        // 개별 이미지 조각 팬(Pan) 조작 상태 데이터
+        let panState = {
+            isDragging: false,
+            sliceIndex: -1,
+            startX: 0,
+            startY: 0,
+            baseSx: 0,
+            baseSy: 0,
+            element: null
+        };
+
+        // 1. 이미지 로드
+        imageInput.addEventListener('change', function(e) {
+            const file = e.target.files[0];
+            if (!file) return;
+
+            const reader = new FileReader();
+            reader.onload = function(event) {
+                const img = new Image();
+                img.onload = function() {
+                    originalImage = img;
+                    mainImage.src = event.target.result;
+                    imageContainer.classList.remove('hidden');
+                    emptyState.classList.add('hidden');
+                    resetLinePositions();
+                    showToast('이미지 로드 완료');
+                };
+                img.src = event.target.result;
+            };
+            reader.readAsDataURL(file);
+        });
+
+        // 2. 초기 선 위치 계산
+        function resetLinePositions() {
+            const rows = parseInt(rowsInput.value) || 1;
+            const cols = parseInt(colsInput.value) || 1;
+            
+            vLines = [];
+            for (let i = 1; i < cols; i++) vLines.push(i / cols);
+            
+            hLines = [];
+            for (let i = 1; i < rows; i++) hLines.push(i / rows);
+            
+            renderLines();
+        }
+
+        [rowsInput, colsInput].forEach(inp => inp.addEventListener('input', resetLinePositions));
+
+        // 3. 선 렌더링 및 드래그 이벤트 연결
+        function renderLines() {
+            if (!originalImage) return;
+            gridOverlay.innerHTML = '';
+
+            // 가로선 생성
+            hLines.forEach((pos, idx) => {
+                const line = document.createElement('div');
+                line.className = 'draggable-line line-h';
+                line.style.top = `${pos * 100}%`;
+                line.addEventListener('mousedown', (e) => startDrag(e, 'H', idx));
+                line.addEventListener('touchstart', (e) => startDrag(e, 'H', idx), { passive: false });
+                gridOverlay.appendChild(line);
+            });
+
+            // 세로선 생성
+            vLines.forEach((pos, idx) => {
+                const line = document.createElement('div');
+                line.className = 'draggable-line line-v';
+                line.style.left = `${pos * 100}%`;
+                line.addEventListener('mousedown', (e) => startDrag(e, 'V', idx));
+                line.addEventListener('touchstart', (e) => startDrag(e, 'V', idx), { passive: false });
+                gridOverlay.appendChild(line);
+            });
+        }
+
+        // 절단선 드래그 시작
+        function startDrag(e, type, index) {
+            e.preventDefault();
+            activeLineType = type;
+            activeLineIndex = index;
+            activeLine = e.target;
+            
+            document.addEventListener('mousemove', onDrag);
+            document.addEventListener('mouseup', endDrag);
+            document.addEventListener('touchmove', onDrag, { passive: false });
+            document.addEventListener('touchend', endDrag);
+        }
+
+        // 절단선 드래그 중
+        function onDrag(e) {
+            if (!activeLine || !imageContainer) return;
+            e.preventDefault();
+
+            const rect = imageContainer.getBoundingClientRect();
+            const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+            const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+
+            if (activeLineType === 'V') {
+                let pos = (clientX - rect.left) / rect.width;
+                pos = Math.max(0.01, Math.min(0.99, pos)); // 경계 제한
+                vLines[activeLineIndex] = pos;
+                activeLine.style.left = `${pos * 100}%`;
+            } else {
+                let pos = (clientY - rect.top) / rect.height;
+                pos = Math.max(0.01, Math.min(0.99, pos)); // 경계 제한
+                hLines[activeLineIndex] = pos;
+                activeLine.style.top = `${pos * 100}%`;
+            }
+        }
+
+        // 절단선 드래그 종료
+        function endDrag() {
+            activeLine = null;
+            document.removeEventListener('mousemove', onDrag);
+            document.removeEventListener('mouseup', endDrag);
+            document.removeEventListener('touchmove', onDrag);
+            document.removeEventListener('touchend', endDrag);
+        }
+
+        // 4. 이미지 정밀 분할 처리 (자르기)
+        cutBtn.addEventListener('click', function() {
+            if (!originalImage) return showToast('이미지를 먼저 업로드하세요.');
+
+            resultsGrid.innerHTML = '';
+            slicedFiles = [];
+            
+            const fullW = originalImage.width;
+            const fullH = originalImage.height;
+
+            // 좌표 정리 (0, 절단선 위치, 1) 후 정렬 및 픽셀 변환
+            const xPoints = [0, ...vLines, 1].sort((a, b) => a - b).map(p => Math.round(p * fullW));
+            const yPoints = [0, ...hLines, 1].sort((a, b) => a - b).map(p => Math.round(p * fullH));
+
+            let sliceIdx = 0;
+            for (let r = 0; r < yPoints.length - 1; r++) {
+                for (let c = 0; c < xPoints.length - 1; c++) {
+                    const sx = xPoints[c];
+                    const sy = yPoints[r];
+                    const sw = xPoints[c+1] - xPoints[c];
+                    const sh = yPoints[r+1] - yPoints[r];
+
+                    if (sw <= 0 || sh <= 0) continue;
+
+                    // 새로운 이미지 조각 객체 생성
+                    const canvas = document.createElement('canvas');
+                    canvas.width = sw;
+                    canvas.height = sh;
+                    const ctx = canvas.getContext('2d', { alpha: false });
+                    ctx.imageSmoothingEnabled = false;
+                    ctx.drawImage(originalImage, sx, sy, sw, sh, 0, 0, sw, sh);
+
+                    const dataUrl = canvas.toDataURL('image/png', 1.0);
+                    const fileName = `slice_${r+1}_${c+1}.png`;
+
+                    const sliceData = {
+                        idx: sliceIdx,
+                        r: r + 1,
+                        c: c + 1,
+                        sx: sx,
+                        sy: sy,
+                        sw: sw,
+                        sh: sh,
+                        origSx: sx, // 초기화를 위한 원래 좌표 백업
+                        origSy: sy,
+                        dataUrl: dataUrl,
+                        name: fileName
+                    };
+
+                    slicedFiles.push(sliceData);
+                    createResultCard(sliceData);
+                    sliceIdx++;
+                }
+            }
+
+            sliceCountText.innerText = `${slicedFiles.length} Slices`;
+            resultSection.classList.remove('hidden');
+            zipActionContainer.classList.remove('hidden');
+            resultSection.scrollIntoView({ behavior: 'smooth' });
+            showToast('분할이 완료되었습니다.');
+        });
+
+        // 5. 개별 결과물 카드 UI 생성
+        function createResultCard(slice) {
+            const card = document.createElement('div');
+            card.id = `card-${slice.idx}`;
+            card.className = 'preview-card relative bg-white border border-slate-200 rounded-xl overflow-hidden shadow-sm hover:shadow-md transition-all flex flex-col group';
+            
+            card.innerHTML = `
+                <!-- 이미지 조정 뷰포트 영역 -->
+                <div class="img-pan-viewport w-full overflow-hidden bg-slate-100 flex items-center justify-center relative" 
+                     style="aspect-ratio: 1/1; min-height: 140px;"
+                     data-index="${slice.idx}">
+                    <img id="slice-img-${slice.idx}" src="${slice.dataUrl}" class="max-w-full max-h-full object-contain pointer-events-none">
+                    
+                    <!-- 호버 안내 툴팁 -->
+                    <div class="drag-tooltip">↔ ↕ 드래그하여 구도 조정</div>
+                </div>
+
+                <!-- 상단 우측 기능 버튼 레이어 (다운로드 & 초기화) -->
+                <div class="absolute top-2 right-2 flex gap-1.5 opacity-100 md:opacity-0 group-hover:opacity-100 transition-opacity duration-200 z-20">
+                    <!-- 위치 되돌리기 (원래 자리로) -->
+                    <button onclick="resetSingleSlice(${slice.idx})" title="구도 초기화" class="bg-white/95 hover:bg-slate-100 text-slate-600 p-2 rounded-lg shadow-md border border-slate-200 hover:scale-105 active:scale-95 transition-all">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 1121.21 6.571" />
+                        </svg>
+                    </button>
+                    <!-- 개별 다운로드 -->
+                    <button onclick="downloadSingle(${slice.idx})" title="이 조각 저장" class="bg-blue-600 hover:bg-blue-700 text-white p-2 rounded-lg shadow-md hover:scale-105 active:scale-95 transition-all">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                        </svg>
+                    </button>
+                </div>
+
+                <!-- 하단 정보 패널 -->
+                <div class="p-2.5 flex justify-between items-center bg-white border-t border-slate-50 relative z-10">
+                    <span class="text-[10px] font-black text-slate-400 bg-slate-100 px-1.5 py-0.5 rounded">R${slice.r} C${slice.c}</span>
+                    <span id="slice-size-${slice.idx}" class="text-[10px] font-medium text-slate-500 font-mono">${slice.sw}x${slice.sh}px</span>
+                </div>
+            `;
+            
+            // 드래그(팬) 이벤트 리스너 바인딩
+            const viewport = card.querySelector('.img-pan-viewport');
+            viewport.addEventListener('mousedown', startPan);
+            viewport.addEventListener('touchstart', startPan, { passive: false });
+
+            resultsGrid.appendChild(card);
+        }
+
+        // 6. 개별 이미지 구도 조정 (팬/드래그) 시작
+        function startPan(e) {
+            e.preventDefault();
+            const viewport = e.currentTarget;
+            const sliceIndex = parseInt(viewport.getAttribute('data-index'));
+            const slice = slicedFiles[sliceIndex];
+            if (!slice || !originalImage) return;
+
+            const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+            const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+
+            panState = {
+                isDragging: true,
+                sliceIndex: sliceIndex,
+                startX: clientX,
+                startY: clientY,
+                baseSx: slice.sx,
+                baseSy: slice.sy,
+                element: viewport
+            };
+
+            document.addEventListener('mousemove', onPan);
+            document.addEventListener('mouseup', endPan);
+            document.addEventListener('touchmove', onPan, { passive: false });
+            document.addEventListener('touchend', endPan);
+        }
+
+        // 개별 이미지 구도 조정 드래그 중
+        function onPan(e) {
+            if (!panState.isDragging) return;
+            e.preventDefault();
+
+            const slice = slicedFiles[panState.sliceIndex];
+            if (!slice) return;
+
+            const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+            const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+
+            const dx = clientX - panState.startX;
+            const dy = clientY - panState.startY;
+
+            // 뷰포트 대비 원본 크기 스케일 계산
+            const rect = panState.element.getBoundingClientRect();
+            const scaleX = slice.sw / rect.width;
+            const scaleY = slice.sh / rect.height;
+
+            // 마우스 드래그 반대 방향으로 이미지 크롭 윈도우 이동 (자연스러운 슬라이딩 구현)
+            let newSx = panState.baseSx - (dx * scaleX);
+            let newSy = panState.baseSy - (dy * scaleY);
+
+            // 원본 이미지 경계를 절대 벗어나지 못하도록 제어
+            newSx = Math.max(0, Math.min(originalImage.width - slice.sw, newSx));
+            newSy = Math.max(0, Math.min(originalImage.height - slice.sh, newSy));
+
+            // 정수 픽셀로 변환
+            newSx = Math.round(newSx);
+            newSy = Math.round(newSy);
+
+            // 픽셀값이 변경된 경우에만 동적으로 다시 그리기
+            if (newSx !== slice.sx || newSy !== slice.sy) {
+                slice.sx = newSx;
+                slice.sy = newSy;
+
+                // 해당 이미지 조각 전용 캔버스에서 해당 위치 다시 크롭
+                const canvas = document.createElement('canvas');
+                canvas.width = slice.sw;
+                canvas.height = slice.sh;
+                const ctx = canvas.getContext('2d', { alpha: false });
+                ctx.imageSmoothingEnabled = false;
+                ctx.drawImage(originalImage, slice.sx, slice.sy, slice.sw, slice.sh, 0, 0, slice.sw, slice.sh);
+
+                // 이미지 요소 소스 즉시 교체 (반응속도 초고속 보장)
+                const newDataUrl = canvas.toDataURL('image/png', 1.0);
+                slice.dataUrl = newDataUrl;
+                
+                const imgElement = document.getElementById(`slice-img-${slice.idx}`);
+                if (imgElement) {
+                    imgElement.src = newDataUrl;
+                }
+            }
+        }
+
+        // 드래그 종료
+        function endPan() {
+            panState.isDragging = false;
+            document.removeEventListener('mousemove', onPan);
+            document.removeEventListener('mouseup', endPan);
+            document.removeEventListener('touchmove', onPan);
+            document.removeEventListener('touchend', endPan);
+        }
+
+        // 7. 개별 이미지 구도 초기화 (원래대로 되돌리기)
+        window.resetSingleSlice = function(idx) {
+            const slice = slicedFiles[idx];
+            if (!slice || !originalImage) return;
+
+            slice.sx = slice.origSx;
+            slice.sy = slice.origSy;
+
+            const canvas = document.createElement('canvas');
+            canvas.width = slice.sw;
+            canvas.height = slice.sh;
+            const ctx = canvas.getContext('2d', { alpha: false });
+            ctx.imageSmoothingEnabled = false;
+            ctx.drawImage(originalImage, slice.sx, slice.sy, slice.sw, slice.sh, 0, 0, slice.sw, slice.sh);
+
+            const newDataUrl = canvas.toDataURL('image/png', 1.0);
+            slice.dataUrl = newDataUrl;
+
+            const imgElement = document.getElementById(`slice-img-${idx}`);
+            if (imgElement) {
+                imgElement.src = newDataUrl;
+            }
+            showToast(`R${slice.r} C${slice.c} 조각이 초기 구도로 환원되었습니다.`);
+        };
+
+        // 8. 개별 다운로드
+        window.downloadSingle = function(idx) {
+            const slice = slicedFiles[idx];
+            if (!slice) return;
+            const a = document.createElement('a');
+            a.href = slice.dataUrl;
+            a.download = slice.name;
+            a.click();
+        };
+
+        // 9. 전체 압축 파일 생성 및 다운로드 (이동된 구도 모두 반영)
+        downloadZipBtn.addEventListener('click', async () => {
+            if (slicedFiles.length === 0) return;
+            showToast('수정된 구도를 모두 취합해 압축 중입니다...');
+            const zip = new JSZip();
+            
+            slicedFiles.forEach(f => {
+                zip.file(f.name, f.dataUrl.split(',')[1], { base64: true });
+            });
+            
+            const blob = await zip.generateAsync({ type: 'blob' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'perfect_sliced_images.zip';
+            a.click();
+            showToast('일괄 ZIP 다운로드가 시작되었습니다!');
+        });
+
+        // 10. 전체 초기화 (Reset All)
+        resetBtn.addEventListener('click', function() {
+            originalImage = null;
+            slicedFiles = [];
+            vLines = [];
+            hLines = [];
+            imageInput.value = '';
+            rowsInput.value = 2;
+            colsInput.value = 2;
+            mainImage.src = '#';
+            imageContainer.classList.add('hidden');
+            emptyState.classList.remove('hidden');
+            resultSection.classList.add('hidden');
+            zipActionContainer.classList.add('hidden');
+            resultsGrid.innerHTML = '';
+            gridOverlay.innerHTML = '';
+            window.scrollTo({ top: 0, behavior: 'smooth' });
+            showToast('모든 설정이 초기화되었습니다.');
+        });
+
+        // 알림 레이어
+        function showToast(msg) {
+            toastMsg.innerText = msg;
+            toast.classList.remove('translate-y-24', 'opacity-0');
+            toast.classList.add('translate-y-0', 'opacity-100');
+            setTimeout(() => {
+                toast.classList.add('translate-y-24', 'opacity-0');
+                toast.classList.remove('translate-y-0', 'opacity-100');
+            }, 2500);
+        }
+    </script>
+</body>
+</html>
